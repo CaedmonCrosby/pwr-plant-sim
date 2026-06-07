@@ -1,0 +1,1303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PWR MCR • Panel Bodies Only • Realistic Horseshoe (Westinghouse 4-Loop)</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:#050505; color:#e8e4d9; font-family:'Inter', system-ui, sans-serif; overflow:hidden; user-select:none; }
+    #gl { display:block; width:100vw; height:100vh; outline:none; }
+    #crosshair { position:absolute; top:50%; left:50%; width:16px; height:16px; border:2px solid #c8a25a; border-radius:50%; transform:translate(-50%,-50%); pointer-events:none; z-index:300; box-shadow:0 0 0 2px rgba(0,0,0,0.7); }
+    #help { position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); width:620px; max-height:70vh; overflow:auto; background:rgba(15,17,20,0.96); border:2px solid #c8a25a; border-radius:4px; padding:20px 24px; font-family:'Roboto Mono', monospace; font-size:12px; color:#e8e4d9; z-index:500; box-shadow:0 0 30px rgba(0,0,0,0.8); display:none; }
+    #help h2 { color:#c8a25a; margin:0 0 12px 0; font-size:16px; }
+    #help ul { margin:8px 0; padding-left:20px; }
+    #help li { margin:4px 0; }
+    #help .close { position:absolute; top:8px; right:12px; cursor:pointer; color:#c8a25a; }
+  </style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="crosshair"></div>
+<div id="help">
+  <span class="close" onclick="document.getElementById('help').style.display='none'">[close - or press H]</span>
+  <h2>PWR MCR • Panel Bodies (Realistic Horseshoe)</h2>
+  <p><strong>Controls</strong></p>
+  <ul>
+    <li>Click canvas to lock pointer (FPS mode)</li>
+    <li>WASD: Walk around the control room</li>
+    <li>Mouse: Look around</li>
+    <li>Shift: Run (faster movement)</li>
+    <li>H: Toggle this help</li>
+    <li>ESC: Unlock pointer</li>
+  </ul>
+  <p><strong>Panels (bodies only - structural design)</strong></p>
+  <ul>
+    <li><strong>Center (Reactor Control)</strong>: Main rod control area</li>
+    <li><strong>Left wing</strong>: RCS (Reactor Coolant System)</li>
+    <li><strong>Far left</strong>: ESF (Engineered Safety Features)</li>
+    <li><strong>Right wing</strong>: Steam Generator &amp; Feedwater</li>
+    <li><strong>Far right</strong>: Turbine Generator</li>
+    <li><strong>Right side bay</strong>: Electrical Distribution</li>
+    <li><strong>Central console</strong>: Plant Process Computer / HMI</li>
+  </ul>
+  <p>This is a focused realistic representation of Westinghouse 4-loop PWR Main Control Board (horseshoe MCB) panel bodies. Panels are placed tightly against each other and the back wall for authentic continuous control board appearance. Walk close to inspect construction details (benches, vertical sections, rivets, conduits, labels, etc.).</p>
+  <p style="font-size:10px; color:#888;">More features (interactions, alarms, sim) can be added later on these exact bodies.</p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ============================================================================
+// PWR MCR - ONLY THE PANEL BODIES (realistic Westinghouse 4-loop style)
+// Horseshoe MCB arrangement. Basic room shell for context only.
+// No interactions, no alarms/gauges/levers, no sim, no props, no particles.
+// Focused exclusively on the structural design of the 7 specified panels.
+// ============================================================================
+
+let scene, camera, renderer, yawObject;
+let moveState = { forward: false, backward: false, left: false, right: false };
+let velocity = new THREE.Vector3();
+let isRunning = false;
+let verticalVelocity = 0;
+let onGround = true;
+let lastStepTime = 0;
+let clock, raycaster;
+
+const canvas = document.getElementById('gl');
+
+// ---------------------------------------------------------------------------
+// Shared helpers from subagent (labels + rivets) - inlined for single file
+// ---------------------------------------------------------------------------
+function makePanelLabelTexture(text, w = 480, h = 56, fg = '#f5f0e0', bg = '#0d1014') {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d', { alpha: true });
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#252a31';
+  ctx.lineWidth = 2.5;
+  ctx.strokeRect(4, 4, w - 8, h - 8);
+  ctx.fillStyle = fg;
+  ctx.font = `600 ${Math.floor(h * 0.57)}px 'Roboto Mono', monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, w / 2, h / 2 + 1);
+  ctx.strokeStyle = 'rgba(255,255,255,0.065)';
+  ctx.lineWidth = 0.8;
+  for (let i = 0; i < 4; i++) {
+    ctx.beginPath();
+    ctx.moveTo(7, 7 + i * 12);
+    ctx.lineTo(w - 7, 8 + i * 12);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function addPanelRivets(parent, cx, cy, cz, countX, countY, spacingX = 0.27, spacingY = 0.29, rivetSize = 0.011) {
+  const rivetMat = new THREE.MeshPhongMaterial({ color: 0x444444, shininess: 28, specular: 0x222222 });
+  for (let ix = 0; ix < countX; ix++) {
+    for (let iy = 0; iy < countY; iy++) {
+      const rx = cx + (ix - (countX - 1) / 2) * spacingX;
+      const ry = cy + (iy - (countY - 1) / 2) * spacingY;
+      const rivet = new THREE.Mesh(new THREE.CylinderGeometry(rivetSize, rivetSize, 0.036, 6), rivetMat);
+      rivet.position.set(rx, ry, cz);
+      rivet.rotation.x = Math.PI / 2;
+      parent.add(rivet);
+    }
+  }
+}
+
+function toggleHelp() {
+  const help = document.getElementById('help');
+  if (!help) return;
+  const isVisible = help.style.display === 'block';
+  help.style.display = isVisible ? 'none' : 'block';
+}
+
+// Web Audio for more natural/human-like control room sounds (footsteps as soft thuds, jump as effort/land thump).
+// Less synthetic tones, more impact noise for "human" feel when walking, jumping, landing.
+let audioCtx;
+function initAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+}
+
+function playFootstep(running) {
+  if (!audioCtx) initAudio();
+  // Natural foot impact: short noise burst, lowpass for soft thud on floor (human-like, not buzzy square)
+  const dur = running ? 0.12 : 0.15;
+  const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * dur, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) {
+    data[i] = (Math.random() * 2 - 1) * (1 - i / data.length); // decay envelope
+  }
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  const filt = audioCtx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.frequency.value = running ? 420 : 320; // slightly brighter for run
+  const g = audioCtx.createGain();
+  g.gain.value = running ? 0.28 : 0.22;
+  src.connect(filt);
+  filt.connect(g);
+  g.connect(audioCtx.destination);
+  src.start();
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur * 0.8);
+}
+
+function playJumpSound() {
+  if (!audioCtx) initAudio();
+  // More natural jump "effort" + push-off: quick noise burst with low tone, human-like leg bend rather than pure sine beep
+  const dur = 0.18;
+  const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * dur, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) {
+    data[i] = (Math.random() * 2 - 1) * (1 - i / data.length * 0.7);
+  }
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  const filt = audioCtx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.frequency.value = 380;
+  const osc = audioCtx.createOscillator(); // light low tone for body movement
+  osc.type = 'sine';
+  osc.frequency.value = 180;
+  const g = audioCtx.createGain();
+  g.gain.value = 0.22;
+  const g2 = audioCtx.createGain();
+  g2.gain.value = 0.12;
+  src.connect(filt);
+  filt.connect(g);
+  osc.connect(g2);
+  g.connect(audioCtx.destination);
+  g2.connect(audioCtx.destination);
+  src.start();
+  osc.start();
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  g2.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur * 0.7);
+  setTimeout(() => { osc.stop(); src.stop(); }, dur * 1000 + 50);
+}
+
+function playLandSound() {
+  if (!audioCtx) initAudio();
+  // Natural heavy landing thud (human boot on floor)
+  const dur = 0.32;
+  const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * dur, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) {
+    data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+  }
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  const filt = audioCtx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.frequency.value = 280;
+  const g = audioCtx.createGain();
+  g.gain.value = 0.32;
+  src.connect(filt);
+  filt.connect(g);
+  g.connect(audioCtx.destination);
+  src.start();
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur * 0.85);
+}
+
+// ---------------------------------------------------------------------------
+// THE 7 PANEL BODY FUNCTIONS (exact from subagent - only bodies)
+// ---------------------------------------------------------------------------
+
+function createReactorControlPanelBody(scene, baseX, baseZ, rotY) {
+  const group = new THREE.Group();
+  group.position.set(baseX, 0, baseZ);
+  group.rotation.y = rotY;
+
+  const W = 4.5;
+  const BENCH_OP_EDGE_Y = 1.02;
+  const BENCH_DEPTH = 0.96;
+  const VERT_HEIGHT = 2.05;
+  const OVERALL_H = BENCH_OP_EDGE_Y + VERT_HEIGHT;
+
+  const panelMat = new THREE.MeshPhongMaterial({ color: 0x2f343c, shininess: 10, specular: 0x222222 });
+  const frameMat = new THREE.MeshPhongMaterial({ color: 0x1c2026, shininess: 14 });
+  const accentMat = new THREE.MeshPhongMaterial({ color: 0x3a3f46, shininess: 8 });
+  const metalMat = new THREE.MeshPhongMaterial({ color: 0x555555, shininess: 22 });
+  const benchTopMat = new THREE.MeshPhongMaterial({ color: 0x353a42, shininess: 6 });
+  const recessMat = new THREE.MeshPhongMaterial({ color: 0x15181c, shininess: 3 });
+  const darkFrameMat = new THREE.MeshPhongMaterial({ color: 0x22262b, shininess: 12 });
+
+  // Lower support
+  const lowerDepth = BENCH_DEPTH - 0.29;
+  const lowerCenterZ = BENCH_DEPTH * 0.5 - 0.22;
+  const lowerCab = new THREE.Mesh(new THREE.BoxGeometry(W * 0.98, 0.88, lowerDepth), panelMat);
+  lowerCab.position.set(0, 0.44, lowerCenterZ);
+  group.add(lowerCab);
+
+  const accessPanel = new THREE.Mesh(new THREE.BoxGeometry(W * 0.82, 0.52, 0.08), darkFrameMat);
+  accessPanel.position.set(0, 0.38, lowerCenterZ + lowerDepth * 0.5 - 0.01);
+  group.add(accessPanel);
+
+  const sideLegDepth = 0.42;
+  const sideLegH = 1.05;
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.11, sideLegH, sideLegDepth), frameMat);
+  legL.position.set(-W / 2 + 0.04, 0.52, lowerCenterZ);
+  group.add(legL);
+  const legR = legL.clone();
+  legR.position.x = W / 2 - 0.04;
+  group.add(legR);
+
+  for (let i = 1; i < 4; i++) {
+    const seam = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.48, 0.09), metalMat);
+    seam.position.set(-W * 0.32 + i * (W * 0.21), 0.38, lowerCenterZ + lowerDepth * 0.5 + 0.01);
+    group.add(seam);
+  }
+
+  addPanelRivets(group, -W / 2 + 0.06, 0.52, lowerCenterZ + 0.18, 2, 5, 0.06, 0.18, 0.010);
+  addPanelRivets(group,  W / 2 - 0.06, 0.52, lowerCenterZ + 0.18, 2, 5, 0.06, 0.18, 0.010);
+  addPanelRivets(group, 0, 0.22, lowerCenterZ + lowerDepth * 0.5 + 0.02, 7, 2, 0.52, 0.22, 0.009);
+
+  // Sloped benchboard
+  const slopeRad = 17 * Math.PI / 180;
+  const backDeltaY = BENCH_DEPTH * Math.sin(slopeRad);
+  const slopeCenterY = BENCH_OP_EDGE_Y + backDeltaY * 0.5;
+  const slopeCenterZ = 0.08;
+
+  const benchSlope = new THREE.Mesh(new THREE.BoxGeometry(W + 0.03, 0.065, BENCH_DEPTH), benchTopMat);
+  benchSlope.rotation.x = slopeRad;
+  benchSlope.position.set(0, slopeCenterY, slopeCenterZ);
+  group.add(benchSlope);
+
+  const lip = new THREE.Mesh(new THREE.BoxGeometry(W + 0.05, 0.035, 0.09), accentMat);
+  lip.position.set(0, BENCH_OP_EDGE_Y + 0.015, slopeCenterZ + BENCH_DEPTH * 0.48);
+  group.add(lip);
+
+  const edgeStrip = new THREE.Mesh(new THREE.BoxGeometry(W + 0.01, 0.018, 0.06), metalMat);
+  edgeStrip.position.set(0, slopeCenterY + 0.04, slopeCenterZ + BENCH_DEPTH * 0.42);
+  group.add(edgeStrip);
+
+  // Vertical section
+  const vertBackZ = -0.62;
+  const vert = new THREE.Mesh(new THREE.BoxGeometry(W, VERT_HEIGHT, 0.29), frameMat);
+  vert.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5, vertBackZ);
+  group.add(vert);
+
+  const recessW = W - 0.32;
+  const recessH = VERT_HEIGHT - 0.38;
+  const recess = new THREE.Mesh(new THREE.BoxGeometry(recessW, recessH, 0.11), recessMat);
+  recess.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5 + 0.02, vertBackZ + 0.12);
+  group.add(recess);
+
+  const bezel = new THREE.Mesh(new THREE.BoxGeometry(recessW + 0.18, recessH + 0.18, 0.07), accentMat);
+  bezel.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5 + 0.01, vertBackZ + 0.09);
+  group.add(bezel);
+
+  const topRail = new THREE.Mesh(new THREE.BoxGeometry(W + 0.08, 0.14, 0.22), darkFrameMat);
+  topRail.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT - 0.02, vertBackZ + 0.18);
+  group.add(topRail);
+
+  // Side panels
+  const sidePanelL = new THREE.Mesh(new THREE.BoxGeometry(0.09, OVERALL_H * 0.96, 0.68), frameMat);
+  sidePanelL.position.set(-W / 2 + 0.03, OVERALL_H * 0.48, -0.18);
+  group.add(sidePanelL);
+  const sidePanelR = sidePanelL.clone();
+  sidePanelR.position.x = W / 2 - 0.03;
+  group.add(sidePanelR);
+
+  // Seams
+  const numBays = 4;
+  for (let b = 1; b < numBays; b++) {
+    const sx = -W * 0.38 + b * (W * 0.25);
+    const vSeam = new THREE.Mesh(new THREE.BoxGeometry(0.015, recessH * 0.92, 0.05), metalMat);
+    vSeam.position.set(sx, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.52, vertBackZ + 0.15);
+    group.add(vSeam);
+    const bSeam = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.07, BENCH_DEPTH * 0.7), metalMat);
+    bSeam.rotation.x = slopeRad;
+    bSeam.position.set(sx, slopeCenterY, slopeCenterZ);
+    group.add(bSeam);
+  }
+  const hSeam = new THREE.Mesh(new THREE.BoxGeometry(recessW * 0.98, 0.014, 0.06), metalMat);
+  hSeam.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.62, vertBackZ + 0.14);
+  group.add(hSeam);
+
+  // Conduits / trays
+  const conduit1 = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, W + 0.55, 8), metalMat);
+  conduit1.rotation.z = Math.PI / 2;
+  conduit1.position.set(0, BENCH_OP_EDGE_Y + 0.55, vertBackZ - 0.22);
+  group.add(conduit1);
+  const conduit2 = new THREE.Mesh(new THREE.CylinderGeometry(0.048, 0.048, W + 0.55, 8), metalMat);
+  conduit2.rotation.z = Math.PI / 2;
+  conduit2.position.set(0, BENCH_OP_EDGE_Y + 1.55, vertBackZ - 0.19);
+  group.add(conduit2);
+  const vConduitL = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.8, 7), metalMat);
+  vConduitL.position.set(-W / 2 + 0.09, BENCH_OP_EDGE_Y + 0.95, vertBackZ - 0.08);
+  group.add(vConduitL);
+  const tray = new THREE.Mesh(new THREE.BoxGeometry(W * 0.94, 0.09, 0.16), darkFrameMat);
+  tray.position.set(0, BENCH_OP_EDGE_Y + 1.12, vertBackZ - 0.25);
+  group.add(tray);
+
+  // Rivets
+  addPanelRivets(group, -W * 0.42, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.78, vertBackZ + 0.17, 5, 3, 0.38, 0.31, 0.010);
+  addPanelRivets(group,  W * 0.42, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.78, vertBackZ + 0.17, 5, 3, 0.38, 0.31, 0.010);
+  addPanelRivets(group, 0, BENCH_OP_EDGE_Y + VERT_HEIGHT - 0.05, vertBackZ + 0.13, 9, 2, 0.42, 0.12, 0.009);
+  addPanelRivets(group, 0, 0.78, lowerCenterZ + lowerDepth * 0.5 + 0.03, 6, 3, 0.58, 0.25, 0.009);
+
+  // Labels
+  const headerTex = makePanelLabelTexture('REACTOR CONTROL', 520, 58, '#f5f0e0', '#0c0f13');
+  const header = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 0.40), new THREE.MeshBasicMaterial({ map: headerTex, transparent: true }));
+  header.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT - 0.32, vertBackZ + 0.22);
+  group.add(header);
+
+  const rodLabelTex = makePanelLabelTexture('ROD CONTROL', 280, 36, '#ffdd99', '#0a0c10');
+  const rodLabel = new THREE.Mesh(new THREE.PlaneGeometry(2.1, 0.26), new THREE.MeshBasicMaterial({ map: rodLabelTex, transparent: true }));
+  rodLabel.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.58, vertBackZ + 0.20);
+  group.add(rodLabel);
+
+  const powerLabelTex = makePanelLabelTexture('POWER RANGE  •  NIS', 240, 28, '#e8e2d0', '#0a0c10');
+  const powerLabel = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.20), new THREE.MeshBasicMaterial({ map: powerLabelTex, transparent: true }));
+  powerLabel.position.set(0, BENCH_OP_EDGE_Y + 0.82, vertBackZ + 0.19);
+  group.add(powerLabel);
+
+  scene.add(group);
+  return group;
+}
+
+function createRCSPanelBody(scene, baseX, baseZ, rotY) {
+  const group = new THREE.Group();
+  group.position.set(baseX, 0, baseZ);
+  group.rotation.y = rotY;
+
+  const W = 4.0;
+  const BENCH_OP_EDGE_Y = 0.98;
+  const BENCH_DEPTH = 0.90;
+  const VERT_HEIGHT = 1.95;
+  const OVERALL_H = BENCH_OP_EDGE_Y + VERT_HEIGHT;
+
+  const panelMat = new THREE.MeshPhongMaterial({ color: 0x2f343c, shininess: 10, specular: 0x222222 });
+  const frameMat = new THREE.MeshPhongMaterial({ color: 0x1c2026, shininess: 14 });
+  const accentMat = new THREE.MeshPhongMaterial({ color: 0x3a3f46, shininess: 8 });
+  const metalMat = new THREE.MeshPhongMaterial({ color: 0x555555, shininess: 22 });
+  const benchTopMat = new THREE.MeshPhongMaterial({ color: 0x353a42, shininess: 6 });
+  const recessMat = new THREE.MeshPhongMaterial({ color: 0x15181c, shininess: 3 });
+  const darkFrameMat = new THREE.MeshPhongMaterial({ color: 0x22262b, shininess: 12 });
+
+  const lowerDepth = BENCH_DEPTH - 0.26;
+  const lowerCenterZ = BENCH_DEPTH * 0.48 - 0.18;
+  const lowerCab = new THREE.Mesh(new THREE.BoxGeometry(W * 0.97, 0.84, lowerDepth), panelMat);
+  lowerCab.position.set(0, 0.42, lowerCenterZ);
+  group.add(lowerCab);
+
+  const access = new THREE.Mesh(new THREE.BoxGeometry(W * 0.78, 0.48, 0.07), darkFrameMat);
+  access.position.set(0, 0.36, lowerCenterZ + lowerDepth * 0.5 - 0.005);
+  group.add(access);
+
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.98, 0.38), frameMat);
+  legL.position.set(-W / 2 + 0.03, 0.49, lowerCenterZ);
+  group.add(legL);
+  const legR = legL.clone(); legR.position.x = W / 2 - 0.03; group.add(legR);
+
+  addPanelRivets(group, -W / 2 + 0.05, 0.49, lowerCenterZ + 0.15, 2, 4, 0.05, 0.20, 0.010);
+  addPanelRivets(group,  W / 2 - 0.05, 0.49, lowerCenterZ + 0.15, 2, 4, 0.05, 0.20, 0.010);
+
+  const slopeRad = 16 * Math.PI / 180;
+  const backDeltaY = BENCH_DEPTH * Math.sin(slopeRad);
+  const slopeCenterY = BENCH_OP_EDGE_Y + backDeltaY * 0.5;
+  const slopeCenterZ = 0.05;
+  const benchSlope = new THREE.Mesh(new THREE.BoxGeometry(W + 0.02, 0.060, BENCH_DEPTH), benchTopMat);
+  benchSlope.rotation.x = slopeRad;
+  benchSlope.position.set(0, slopeCenterY, slopeCenterZ);
+  group.add(benchSlope);
+
+  const lip = new THREE.Mesh(new THREE.BoxGeometry(W + 0.04, 0.032, 0.085), accentMat);
+  lip.position.set(0, BENCH_OP_EDGE_Y + 0.012, slopeCenterZ + BENCH_DEPTH * 0.47);
+  group.add(lip);
+
+  const vertBackZ = -0.58;
+  const vert = new THREE.Mesh(new THREE.BoxGeometry(W, VERT_HEIGHT, 0.27), frameMat);
+  vert.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5, vertBackZ);
+  group.add(vert);
+
+  const recess = new THREE.Mesh(new THREE.BoxGeometry(W - 0.28, VERT_HEIGHT - 0.36, 0.10), recessMat);
+  recess.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5 + 0.01, vertBackZ + 0.11);
+  group.add(recess);
+
+  const bezel = new THREE.Mesh(new THREE.BoxGeometry(W - 0.14, VERT_HEIGHT - 0.20, 0.065), accentMat);
+  bezel.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5, vertBackZ + 0.09);
+  group.add(bezel);
+
+  const topRail = new THREE.Mesh(new THREE.BoxGeometry(W + 0.06, 0.12, 0.19), darkFrameMat);
+  topRail.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT - 0.03, vertBackZ + 0.15);
+  group.add(topRail);
+
+  const sideL = new THREE.Mesh(new THREE.BoxGeometry(0.08, OVERALL_H * 0.95, 0.62), frameMat);
+  sideL.position.set(-W / 2 + 0.02, OVERALL_H * 0.48, -0.15);
+  group.add(sideL);
+  const sideR = sideL.clone(); sideR.position.x = W / 2 - 0.02; group.add(sideR);
+
+  for (let b = 1; b < 4; b++) {
+    const sx = -W * 0.36 + b * (W * 0.24);
+    const vSeam = new THREE.Mesh(new THREE.BoxGeometry(0.014, (VERT_HEIGHT - 0.36) * 0.9, 0.045), metalMat);
+    vSeam.position.set(sx, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5, vertBackZ + 0.13);
+    group.add(vSeam);
+    const bSeam = new THREE.Mesh(new THREE.BoxGeometry(0.011, 0.06, BENCH_DEPTH * 0.65), metalMat);
+    bSeam.rotation.x = slopeRad;
+    bSeam.position.set(sx, slopeCenterY, slopeCenterZ);
+    group.add(bSeam);
+  }
+
+  const c1 = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.052, W + 0.4, 8), metalMat);
+  c1.rotation.z = Math.PI / 2; c1.position.set(0, BENCH_OP_EDGE_Y + 0.48, vertBackZ - 0.18); group.add(c1);
+  const c2 = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, W + 0.4, 8), metalMat);
+  c2.rotation.z = Math.PI / 2; c2.position.set(0, BENCH_OP_EDGE_Y + 1.38, vertBackZ - 0.16); group.add(c2);
+  const tray = new THREE.Mesh(new THREE.BoxGeometry(W * 0.9, 0.08, 0.14), darkFrameMat);
+  tray.position.set(0, BENCH_OP_EDGE_Y + 1.05, vertBackZ - 0.21); group.add(tray);
+
+  addPanelRivets(group, -W * 0.38, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.72, vertBackZ + 0.15, 4, 3, 0.36, 0.28, 0.009);
+  addPanelRivets(group,  W * 0.38, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.72, vertBackZ + 0.15, 4, 3, 0.36, 0.28, 0.009);
+
+  const headerTex = makePanelLabelTexture('REACTOR COOLANT SYSTEM', 460, 52, '#f5f0e0', '#0c0f13');
+  const header = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 0.36), new THREE.MeshBasicMaterial({ map: headerTex, transparent: true }));
+  header.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT - 0.30, vertBackZ + 0.19);
+  group.add(header);
+
+  const rcsLabel = makePanelLabelTexture('RCS PRESSURE  •  LOOPS', 240, 28, '#e8e2d0', '#0a0c10');
+  const rcsP = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 0.20), new THREE.MeshBasicMaterial({ map: rcsLabel, transparent: true }));
+  rcsP.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.55, vertBackZ + 0.17);
+  group.add(rcsP);
+
+  const loopLabels = ['LOOP 1', 'LOOP 2', 'LOOP 3', 'LOOP 4'];
+  loopLabels.forEach((txt, i) => {
+    const lt = makePanelLabelTexture(txt, 92, 20, '#c8c0a8', '#0a0c10');
+    const lp = new THREE.Mesh(new THREE.PlaneGeometry(0.68, 0.14), new THREE.MeshBasicMaterial({ map: lt, transparent: true }));
+    lp.position.set(-1.35 + i * 0.90, BENCH_OP_EDGE_Y + 0.68, vertBackZ + 0.16);
+    group.add(lp);
+  });
+
+  scene.add(group);
+  return group;
+}
+
+function createSGFeedPanelBody(scene, baseX, baseZ, rotY) {
+  const group = new THREE.Group();
+  group.position.set(baseX, 0, baseZ);
+  group.rotation.y = rotY;
+
+  const W = 4.2;
+  const BENCH_OP_EDGE_Y = 1.00;
+  const BENCH_DEPTH = 0.94;
+  const VERT_HEIGHT = 2.00;
+  const OVERALL_H = BENCH_OP_EDGE_Y + VERT_HEIGHT;
+
+  const panelMat = new THREE.MeshPhongMaterial({ color: 0x2f343c, shininess: 10, specular: 0x222222 });
+  const frameMat = new THREE.MeshPhongMaterial({ color: 0x1c2026, shininess: 14 });
+  const accentMat = new THREE.MeshPhongMaterial({ color: 0x3a3f46, shininess: 8 });
+  const metalMat = new THREE.MeshPhongMaterial({ color: 0x555555, shininess: 22 });
+  const benchTopMat = new THREE.MeshPhongMaterial({ color: 0x353a42, shininess: 6 });
+  const recessMat = new THREE.MeshPhongMaterial({ color: 0x15181c, shininess: 3 });
+  const darkFrameMat = new THREE.MeshPhongMaterial({ color: 0x22262b, shininess: 12 });
+
+  const lowerDepth = BENCH_DEPTH - 0.27;
+  const lowerCenterZ = BENCH_DEPTH * 0.49 - 0.19;
+  const lowerCab = new THREE.Mesh(new THREE.BoxGeometry(W * 0.98, 0.86, lowerDepth), panelMat);
+  lowerCab.position.set(0, 0.43, lowerCenterZ);
+  group.add(lowerCab);
+
+  const access = new THREE.Mesh(new THREE.BoxGeometry(W * 0.80, 0.50, 0.075), darkFrameMat);
+  access.position.set(0, 0.37, lowerCenterZ + lowerDepth * 0.5 - 0.01);
+  group.add(access);
+
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.105, 1.02, 0.40), frameMat);
+  legL.position.set(-W / 2 + 0.035, 0.51, lowerCenterZ);
+  group.add(legL);
+  const legR = legL.clone(); legR.position.x = W / 2 - 0.035; group.add(legR);
+
+  addPanelRivets(group, -W / 2 + 0.055, 0.51, lowerCenterZ + 0.16, 2, 5, 0.055, 0.19, 0.010);
+  addPanelRivets(group,  W / 2 - 0.055, 0.51, lowerCenterZ + 0.16, 2, 5, 0.055, 0.19, 0.010);
+
+  const slopeRad = 18 * Math.PI / 180;
+  const backDeltaY = BENCH_DEPTH * Math.sin(slopeRad);
+  const slopeCenterY = BENCH_OP_EDGE_Y + backDeltaY * 0.5;
+  const slopeCenterZ = 0.07;
+  const benchSlope = new THREE.Mesh(new THREE.BoxGeometry(W + 0.025, 0.062, BENCH_DEPTH), benchTopMat);
+  benchSlope.rotation.x = slopeRad;
+  benchSlope.position.set(0, slopeCenterY, slopeCenterZ);
+  group.add(benchSlope);
+
+  const lip = new THREE.Mesh(new THREE.BoxGeometry(W + 0.045, 0.033, 0.088), accentMat);
+  lip.position.set(0, BENCH_OP_EDGE_Y + 0.014, slopeCenterZ + BENCH_DEPTH * 0.475);
+  group.add(lip);
+
+  const vertBackZ = -0.60;
+  const vert = new THREE.Mesh(new THREE.BoxGeometry(W, VERT_HEIGHT, 0.275), frameMat);
+  vert.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5, vertBackZ);
+  group.add(vert);
+
+  const recess = new THREE.Mesh(new THREE.BoxGeometry(W - 0.30, VERT_HEIGHT - 0.34, 0.105), recessMat);
+  recess.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5 + 0.015, vertBackZ + 0.115);
+  group.add(recess);
+
+  const bezel = new THREE.Mesh(new THREE.BoxGeometry(W - 0.15, VERT_HEIGHT - 0.18, 0.068), accentMat);
+  bezel.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5 + 0.005, vertBackZ + 0.085);
+  group.add(bezel);
+
+  const topRail = new THREE.Mesh(new THREE.BoxGeometry(W + 0.07, 0.13, 0.20), darkFrameMat);
+  topRail.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT - 0.025, vertBackZ + 0.16);
+  group.add(topRail);
+
+  const sideL = new THREE.Mesh(new THREE.BoxGeometry(0.085, OVERALL_H * 0.96, 0.64), frameMat);
+  sideL.position.set(-W / 2 + 0.025, OVERALL_H * 0.48, -0.16);
+  group.add(sideL);
+  const sideR = sideL.clone(); sideR.position.x = W / 2 - 0.025; group.add(sideR);
+
+  for (let b = 1; b < 5; b++) {
+    const sx = -W * 0.37 + b * (W * 0.185);
+    const vSeam = new THREE.Mesh(new THREE.BoxGeometry(0.013, (VERT_HEIGHT - 0.34) * 0.88, 0.048), metalMat);
+    vSeam.position.set(sx, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5, vertBackZ + 0.14);
+    group.add(vSeam);
+  }
+
+  const c1 = new THREE.Mesh(new THREE.CylinderGeometry(0.053, 0.053, W + 0.45, 8), metalMat);
+  c1.rotation.z = Math.PI / 2; c1.position.set(0, BENCH_OP_EDGE_Y + 0.52, vertBackZ - 0.20); group.add(c1);
+  const c2 = new THREE.Mesh(new THREE.CylinderGeometry(0.047, 0.047, W + 0.45, 8), metalMat);
+  c2.rotation.z = Math.PI / 2; c2.position.set(0, BENCH_OP_EDGE_Y + 1.42, vertBackZ - 0.17); group.add(c2);
+  const tray = new THREE.Mesh(new THREE.BoxGeometry(W * 0.92, 0.085, 0.15), darkFrameMat);
+  tray.position.set(0, BENCH_OP_EDGE_Y + 1.08, vertBackZ - 0.23); group.add(tray);
+
+  addPanelRivets(group, -W * 0.40, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.74, vertBackZ + 0.155, 5, 3, 0.34, 0.27, 0.0095);
+  addPanelRivets(group,  W * 0.40, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.74, vertBackZ + 0.155, 5, 3, 0.34, 0.27, 0.0095);
+
+  const headerTex = makePanelLabelTexture('STEAM GENERATORS', 440, 50, '#f5f0e0', '#0c0f13');
+  const header = new THREE.Mesh(new THREE.PlaneGeometry(3.0, 0.35), new THREE.MeshBasicMaterial({ map: headerTex, transparent: true }));
+  header.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT - 0.28, vertBackZ + 0.18);
+  group.add(header);
+
+  const fwLabel = makePanelLabelTexture('FEEDWATER CONTROL', 260, 30, '#e8e2d0', '#0a0c10');
+  const fwP = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.21), new THREE.MeshBasicMaterial({ map: fwLabel, transparent: true }));
+  fwP.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.57, vertBackZ + 0.16);
+  group.add(fwP);
+
+  const sgLabel = makePanelLabelTexture('SG 1-4 LEVEL', 180, 24, '#c8c0a8', '#0a0c10');
+  const sgP = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.17), new THREE.MeshBasicMaterial({ map: sgLabel, transparent: true }));
+  sgP.position.set(0, BENCH_OP_EDGE_Y + 0.71, vertBackZ + 0.155);
+  group.add(sgP);
+
+  scene.add(group);
+  return group;
+}
+
+function createTurbinePanelBody(scene, baseX, baseZ, rotY) {
+  const group = new THREE.Group();
+  group.position.set(baseX, 0, baseZ);
+  group.rotation.y = rotY;
+
+  const W = 3.8;
+  const BENCH_OP_EDGE_Y = 0.96;
+  const BENCH_DEPTH = 0.88;
+  const VERT_HEIGHT = 1.92;
+  const OVERALL_H = BENCH_OP_EDGE_Y + VERT_HEIGHT;
+
+  const panelMat = new THREE.MeshPhongMaterial({ color: 0x2f343c, shininess: 10, specular: 0x222222 });
+  const frameMat = new THREE.MeshPhongMaterial({ color: 0x1c2026, shininess: 14 });
+  const accentMat = new THREE.MeshPhongMaterial({ color: 0x3a3f46, shininess: 8 });
+  const metalMat = new THREE.MeshPhongMaterial({ color: 0x555555, shininess: 22 });
+  const benchTopMat = new THREE.MeshPhongMaterial({ color: 0x353a42, shininess: 6 });
+  const recessMat = new THREE.MeshPhongMaterial({ color: 0x15181c, shininess: 3 });
+  const darkFrameMat = new THREE.MeshPhongMaterial({ color: 0x22262b, shininess: 12 });
+
+  const lowerDepth = BENCH_DEPTH - 0.25;
+  const lowerCenterZ = BENCH_DEPTH * 0.47 - 0.17;
+  const lowerCab = new THREE.Mesh(new THREE.BoxGeometry(W * 0.96, 0.82, lowerDepth), panelMat);
+  lowerCab.position.set(0, 0.41, lowerCenterZ);
+  group.add(lowerCab);
+
+  const access = new THREE.Mesh(new THREE.BoxGeometry(W * 0.76, 0.46, 0.07), darkFrameMat);
+  access.position.set(0, 0.35, lowerCenterZ + lowerDepth * 0.5 - 0.005);
+  group.add(access);
+
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.96, 0.36), frameMat);
+  legL.position.set(-W / 2 + 0.03, 0.48, lowerCenterZ);
+  group.add(legL);
+  const legR = legL.clone(); legR.position.x = W / 2 - 0.03; group.add(legR);
+
+  addPanelRivets(group, -W / 2 + 0.05, 0.48, lowerCenterZ + 0.14, 2, 4, 0.05, 0.18, 0.0095);
+  addPanelRivets(group,  W / 2 - 0.05, 0.48, lowerCenterZ + 0.14, 2, 4, 0.05, 0.18, 0.0095);
+
+  const slopeRad = 15 * Math.PI / 180;
+  const backDeltaY = BENCH_DEPTH * Math.sin(slopeRad);
+  const slopeCenterY = BENCH_OP_EDGE_Y + backDeltaY * 0.5;
+  const slopeCenterZ = 0.04;
+  const benchSlope = new THREE.Mesh(new THREE.BoxGeometry(W + 0.02, 0.058, BENCH_DEPTH), benchTopMat);
+  benchSlope.rotation.x = slopeRad;
+  benchSlope.position.set(0, slopeCenterY, slopeCenterZ);
+  group.add(benchSlope);
+
+  const lip = new THREE.Mesh(new THREE.BoxGeometry(W + 0.04, 0.031, 0.082), accentMat);
+  lip.position.set(0, BENCH_OP_EDGE_Y + 0.011, slopeCenterZ + BENCH_DEPTH * 0.46);
+  group.add(lip);
+
+  const vertBackZ = -0.56;
+  const vert = new THREE.Mesh(new THREE.BoxGeometry(W, VERT_HEIGHT, 0.26), frameMat);
+  vert.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5, vertBackZ);
+  group.add(vert);
+
+  const recess = new THREE.Mesh(new THREE.BoxGeometry(W - 0.26, VERT_HEIGHT - 0.32, 0.095), recessMat);
+  recess.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5 + 0.01, vertBackZ + 0.105);
+  group.add(recess);
+
+  const bezel = new THREE.Mesh(new THREE.BoxGeometry(W - 0.13, VERT_HEIGHT - 0.16, 0.062), accentMat);
+  bezel.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5, vertBackZ + 0.08);
+  group.add(bezel);
+
+  const topRail = new THREE.Mesh(new THREE.BoxGeometry(W + 0.05, 0.11, 0.18), darkFrameMat);
+  topRail.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT - 0.02, vertBackZ + 0.14);
+  group.add(topRail);
+
+  const sideL = new THREE.Mesh(new THREE.BoxGeometry(0.078, OVERALL_H * 0.94, 0.58), frameMat);
+  sideL.position.set(-W / 2 + 0.02, OVERALL_H * 0.47, -0.14);
+  group.add(sideL);
+  const sideR = sideL.clone(); sideR.position.x = W / 2 - 0.02; group.add(sideR);
+
+  for (let b = 1; b < 3; b++) {
+    const sx = -W * 0.30 + b * (W * 0.30);
+    const vSeam = new THREE.Mesh(new THREE.BoxGeometry(0.013, (VERT_HEIGHT - 0.32) * 0.9, 0.044), metalMat);
+    vSeam.position.set(sx, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5, vertBackZ + 0.12);
+    group.add(vSeam);
+  }
+
+  const c1 = new THREE.Mesh(new THREE.CylinderGeometry(0.050, 0.050, W + 0.35, 8), metalMat);
+  c1.rotation.z = Math.PI / 2; c1.position.set(0, BENCH_OP_EDGE_Y + 0.46, vertBackZ - 0.17); group.add(c1);
+  const c2 = new THREE.Mesh(new THREE.CylinderGeometry(0.044, 0.044, W + 0.35, 8), metalMat);
+  c2.rotation.z = Math.PI / 2; c2.position.set(0, BENCH_OP_EDGE_Y + 1.32, vertBackZ - 0.15); group.add(c2);
+
+  addPanelRivets(group, -W * 0.36, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.70, vertBackZ + 0.13, 4, 3, 0.32, 0.26, 0.009);
+  addPanelRivets(group,  W * 0.36, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.70, vertBackZ + 0.13, 4, 3, 0.32, 0.26, 0.009);
+
+  const headerTex = makePanelLabelTexture('TURBINE GENERATOR', 400, 48, '#f5f0e0', '#0c0f13');
+  const header = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.33), new THREE.MeshBasicMaterial({ map: headerTex, transparent: true }));
+  header.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT - 0.26, vertBackZ + 0.16);
+  group.add(header);
+
+  const turbLabel = makePanelLabelTexture('MAIN TURBINE', 200, 26, '#e8e2d0', '#0a0c10');
+  const tP = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.18), new THREE.MeshBasicMaterial({ map: turbLabel, transparent: true }));
+  tP.position.set(-0.9, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.56, vertBackZ + 0.145);
+  group.add(tP);
+
+  const condLabel = makePanelLabelTexture('CONDENSER', 160, 22, '#c8c0a8', '#0a0c10');
+  const cP = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.15), new THREE.MeshBasicMaterial({ map: condLabel, transparent: true }));
+  cP.position.set(0.95, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.56, vertBackZ + 0.145);
+  group.add(cP);
+
+  scene.add(group);
+  return group;
+}
+
+function createElectricalPanelBody(scene, baseX, baseZ, rotY) {
+  const group = new THREE.Group();
+  group.position.set(baseX, 0, baseZ);
+  group.rotation.y = rotY;
+
+  const W = 3.5;
+  const BENCH_OP_EDGE_Y = 0.94;
+  const BENCH_DEPTH = 0.85;
+  const VERT_HEIGHT = 1.88;
+  const OVERALL_H = BENCH_OP_EDGE_Y + VERT_HEIGHT;
+
+  const panelMat = new THREE.MeshPhongMaterial({ color: 0x2f343c, shininess: 10, specular: 0x222222 });
+  const frameMat = new THREE.MeshPhongMaterial({ color: 0x1c2026, shininess: 14 });
+  const accentMat = new THREE.MeshPhongMaterial({ color: 0x3a3f46, shininess: 8 });
+  const metalMat = new THREE.MeshPhongMaterial({ color: 0x555555, shininess: 22 });
+  const benchTopMat = new THREE.MeshPhongMaterial({ color: 0x353a42, shininess: 6 });
+  const recessMat = new THREE.MeshPhongMaterial({ color: 0x15181c, shininess: 3 });
+  const darkFrameMat = new THREE.MeshPhongMaterial({ color: 0x22262b, shininess: 12 });
+
+  const lowerDepth = BENCH_DEPTH - 0.24;
+  const lowerCenterZ = BENCH_DEPTH * 0.46 - 0.16;
+  const lowerCab = new THREE.Mesh(new THREE.BoxGeometry(W * 0.95, 0.80, lowerDepth), panelMat);
+  lowerCab.position.set(0, 0.40, lowerCenterZ);
+  group.add(lowerCab);
+
+  const access = new THREE.Mesh(new THREE.BoxGeometry(W * 0.72, 0.44, 0.065), darkFrameMat);
+  access.position.set(0, 0.34, lowerCenterZ + lowerDepth * 0.5 - 0.004);
+  group.add(access);
+
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.94, 0.34), frameMat);
+  legL.position.set(-W / 2 + 0.025, 0.47, lowerCenterZ);
+  group.add(legL);
+  const legR = legL.clone(); legR.position.x = W / 2 - 0.025; group.add(legR);
+
+  addPanelRivets(group, -W / 2 + 0.045, 0.47, lowerCenterZ + 0.13, 2, 4, 0.045, 0.17, 0.009);
+  addPanelRivets(group,  W / 2 - 0.045, 0.47, lowerCenterZ + 0.13, 2, 4, 0.045, 0.17, 0.009);
+
+  const slopeRad = 16 * Math.PI / 180;
+  const backDeltaY = BENCH_DEPTH * Math.sin(slopeRad);
+  const slopeCenterY = BENCH_OP_EDGE_Y + backDeltaY * 0.5;
+  const slopeCenterZ = 0.03;
+  const benchSlope = new THREE.Mesh(new THREE.BoxGeometry(W + 0.018, 0.056, BENCH_DEPTH), benchTopMat);
+  benchSlope.rotation.x = slopeRad;
+  benchSlope.position.set(0, slopeCenterY, slopeCenterZ);
+  group.add(benchSlope);
+
+  const lip = new THREE.Mesh(new THREE.BoxGeometry(W + 0.035, 0.030, 0.078), accentMat);
+  lip.position.set(0, BENCH_OP_EDGE_Y + 0.010, slopeCenterZ + BENCH_DEPTH * 0.455);
+  group.add(lip);
+
+  const vertBackZ = -0.54;
+  const vert = new THREE.Mesh(new THREE.BoxGeometry(W, VERT_HEIGHT, 0.25), frameMat);
+  vert.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5, vertBackZ);
+  group.add(vert);
+
+  const recess = new THREE.Mesh(new THREE.BoxGeometry(W - 0.24, VERT_HEIGHT - 0.30, 0.09), recessMat);
+  recess.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5, vertBackZ + 0.10);
+  group.add(recess);
+
+  const bezel = new THREE.Mesh(new THREE.BoxGeometry(W - 0.12, VERT_HEIGHT - 0.15, 0.058), accentMat);
+  bezel.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5 - 0.005, vertBackZ + 0.075);
+  group.add(bezel);
+
+  const topRail = new THREE.Mesh(new THREE.BoxGeometry(W + 0.04, 0.105, 0.17), darkFrameMat);
+  topRail.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT - 0.015, vertBackZ + 0.13);
+  group.add(topRail);
+
+  const sideL = new THREE.Mesh(new THREE.BoxGeometry(0.072, OVERALL_H * 0.93, 0.55), frameMat);
+  sideL.position.set(-W / 2 + 0.018, OVERALL_H * 0.465, -0.13);
+  group.add(sideL);
+  const sideR = sideL.clone(); sideR.position.x = W / 2 - 0.018; group.add(sideR);
+
+  for (let b = 1; b < 3; b++) {
+    const sx = -W * 0.28 + b * (W * 0.28);
+    const vSeam = new THREE.Mesh(new THREE.BoxGeometry(0.012, (VERT_HEIGHT - 0.30) * 0.88, 0.042), metalMat);
+    vSeam.position.set(sx, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5, vertBackZ + 0.115);
+    group.add(vSeam);
+  }
+
+  const c1 = new THREE.Mesh(new THREE.CylinderGeometry(0.048, 0.048, W + 0.32, 8), metalMat);
+  c1.rotation.z = Math.PI / 2; c1.position.set(0, BENCH_OP_EDGE_Y + 0.44, vertBackZ - 0.155); group.add(c1);
+
+  addPanelRivets(group, -W * 0.32, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.68, vertBackZ + 0.12, 3, 3, 0.30, 0.24, 0.0085);
+  addPanelRivets(group,  W * 0.32, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.68, vertBackZ + 0.12, 3, 3, 0.30, 0.24, 0.0085);
+
+  const headerTex = makePanelLabelTexture('ELECTRICAL DISTRIBUTION', 380, 46, '#f5f0e0', '#0c0f13');
+  const header = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.32), new THREE.MeshBasicMaterial({ map: headerTex, transparent: true }));
+  header.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT - 0.24, vertBackZ + 0.145);
+  group.add(header);
+
+  const kvLabel = makePanelLabelTexture('4160V  •  SWITCHGEAR', 200, 24, '#e8e2d0', '#0a0c10');
+  const kvP = new THREE.Mesh(new THREE.PlaneGeometry(1.55, 0.17), new THREE.MeshBasicMaterial({ map: kvLabel, transparent: true }));
+  kvP.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.55, vertBackZ + 0.13);
+  group.add(kvP);
+
+  scene.add(group);
+  return group;
+}
+
+function createESFPanelBody(scene, baseX, baseZ, rotY) {
+  const group = new THREE.Group();
+  group.position.set(baseX, 0, baseZ);
+  group.rotation.y = rotY;
+
+  const W = 4.0;
+  const BENCH_OP_EDGE_Y = 0.99;
+  const BENCH_DEPTH = 0.91;
+  const VERT_HEIGHT = 1.98;
+  const OVERALL_H = BENCH_OP_EDGE_Y + VERT_HEIGHT;
+
+  const panelMat = new THREE.MeshPhongMaterial({ color: 0x2f343c, shininess: 10, specular: 0x222222 });
+  const frameMat = new THREE.MeshPhongMaterial({ color: 0x1c2026, shininess: 14 });
+  const accentMat = new THREE.MeshPhongMaterial({ color: 0x3a3f46, shininess: 8 });
+  const metalMat = new THREE.MeshPhongMaterial({ color: 0x555555, shininess: 22 });
+  const benchTopMat = new THREE.MeshPhongMaterial({ color: 0x353a42, shininess: 6 });
+  const recessMat = new THREE.MeshPhongMaterial({ color: 0x15181c, shininess: 3 });
+  const darkFrameMat = new THREE.MeshPhongMaterial({ color: 0x22262b, shininess: 12 });
+
+  const lowerDepth = BENCH_DEPTH - 0.27;
+  const lowerCenterZ = BENCH_DEPTH * 0.48 - 0.18;
+  const lowerCab = new THREE.Mesh(new THREE.BoxGeometry(W * 0.97, 0.85, lowerDepth), panelMat);
+  lowerCab.position.set(0, 0.425, lowerCenterZ);
+  group.add(lowerCab);
+
+  const access = new THREE.Mesh(new THREE.BoxGeometry(W * 0.79, 0.49, 0.072), darkFrameMat);
+  access.position.set(0, 0.365, lowerCenterZ + lowerDepth * 0.5 - 0.008);
+  group.add(access);
+
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.102, 1.00, 0.39), frameMat);
+  legL.position.set(-W / 2 + 0.032, 0.50, lowerCenterZ);
+  group.add(legL);
+  const legR = legL.clone(); legR.position.x = W / 2 - 0.032; group.add(legR);
+
+  addPanelRivets(group, -W / 2 + 0.052, 0.50, lowerCenterZ + 0.155, 2, 5, 0.052, 0.185, 0.0098);
+  addPanelRivets(group,  W / 2 - 0.052, 0.50, lowerCenterZ + 0.155, 2, 5, 0.052, 0.185, 0.0098);
+
+  const slopeRad = 17 * Math.PI / 180;
+  const backDeltaY = BENCH_DEPTH * Math.sin(slopeRad);
+  const slopeCenterY = BENCH_OP_EDGE_Y + backDeltaY * 0.5;
+  const slopeCenterZ = 0.06;
+  const benchSlope = new THREE.Mesh(new THREE.BoxGeometry(W + 0.022, 0.061, BENCH_TOP), benchTopMat);
+  benchSlope.rotation.x = slopeRad;
+  benchSlope.position.set(0, slopeCenterY, slopeCenterZ);
+  group.add(benchSlope);
+
+  const lip = new THREE.Mesh(new THREE.BoxGeometry(W + 0.042, 0.032, 0.086), accentMat);
+  lip.position.set(0, BENCH_OP_EDGE_Y + 0.013, slopeCenterZ + BENCH_DEPTH * 0.47);
+  group.add(lip);
+
+  const vertBackZ = -0.59;
+  const vert = new THREE.Mesh(new THREE.BoxGeometry(W, VERT_HEIGHT, 0.268), frameMat);
+  vert.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5, vertBackZ);
+  group.add(vert);
+
+  const recess = new THREE.Mesh(new THREE.BoxGeometry(W - 0.29, VERT_HEIGHT - 0.33, 0.102), recessMat);
+  recess.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5 + 0.012, vertBackZ + 0.112);
+  group.add(recess);
+
+  const bezel = new THREE.Mesh(new THREE.BoxGeometry(W - 0.145, VERT_HEIGHT - 0.17, 0.066), accentMat);
+  bezel.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5 + 0.003, vertBackZ + 0.082);
+  group.add(bezel);
+
+  const topRail = new THREE.Mesh(new THREE.BoxGeometry(W + 0.065, 0.125, 0.195), darkFrameMat);
+  topRail.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT - 0.022, vertBackZ + 0.155);
+  group.add(topRail);
+
+  const sideL = new THREE.Mesh(new THREE.BoxGeometry(0.082, OVERALL_H * 0.955, 0.61), frameMat);
+  sideL.position.set(-W / 2 + 0.023, OVERALL_H * 0.478, -0.155);
+  group.add(sideL);
+  const sideR = sideL.clone(); sideR.position.x = W / 2 - 0.023; group.add(sideR);
+
+  for (let b = 1; b < 4; b++) {
+    const sx = -W * 0.35 + b * (W * 0.23);
+    const vSeam = new THREE.Mesh(new THREE.BoxGeometry(0.0135, (VERT_HEIGHT - 0.33) * 0.89, 0.046), metalMat);
+    vSeam.position.set(sx, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.5, vertBackZ + 0.135);
+    group.add(vSeam);
+  }
+
+  const c1 = new THREE.Mesh(new THREE.CylinderGeometry(0.051, 0.051, W + 0.42, 8), metalMat);
+  c1.rotation.z = Math.PI / 2; c1.position.set(0, BENCH_OP_EDGE_Y + 0.50, vertBackZ - 0.19); group.add(c1);
+  const c2 = new THREE.Mesh(new THREE.CylinderGeometry(0.046, 0.046, W + 0.42, 8), metalMat);
+  c2.rotation.z = Math.PI / 2; c2.position.set(0, BENCH_OP_EDGE_Y + 1.40, vertBackZ - 0.165); group.add(c2);
+  const tray = new THREE.Mesh(new THREE.BoxGeometry(W * 0.91, 0.082, 0.145), darkFrameMat);
+  tray.position.set(0, BENCH_OP_EDGE_Y + 1.06, vertBackZ - 0.22); group.add(tray);
+
+  addPanelRivets(group, -W * 0.39, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.73, vertBackZ + 0.15, 4, 3, 0.35, 0.27, 0.0092);
+  addPanelRivets(group,  W * 0.39, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.73, vertBackZ + 0.15, 4, 3, 0.35, 0.27, 0.0092);
+
+  const headerTex = makePanelLabelTexture('ENGINEERED SAFETY FEATURES', 470, 52, '#f5f0e0', '#0c0f13');
+  const header = new THREE.Mesh(new THREE.PlaneGeometry(3.25, 0.36), new THREE.MeshBasicMaterial({ map: headerTex, transparent: true }));
+  header.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT - 0.29, vertBackZ + 0.175);
+  group.add(header);
+
+  const safLabel = makePanelLabelTexture('SAFEGUARDS  •  SI / CONTAINMENT', 280, 28, '#e8e2d0', '#0a0c10');
+  const sP = new THREE.Mesh(new THREE.PlaneGeometry(2.1, 0.20), new THREE.MeshBasicMaterial({ map: safLabel, transparent: true }));
+  sP.position.set(0, BENCH_OP_EDGE_Y + VERT_HEIGHT * 0.56, vertBackZ + 0.155);
+  group.add(sP);
+
+  scene.add(group);
+  return group;
+}
+
+function createHMIPanelBody(scene, baseX, baseZ, rotY) {
+  const group = new THREE.Group();
+  group.position.set(baseX, 0, baseZ);
+  group.rotation.y = rotY;
+
+  const W = 3.0;
+  const BENCH_OP_EDGE_Y = 0.78;
+  const BENCH_DEPTH = 0.82;
+  const RISER_H = 1.35;
+  const OVERALL_H = BENCH_OP_EDGE_Y + RISER_H;
+
+  const panelMat = new THREE.MeshPhongMaterial({ color: 0x2f343c, shininess: 9, specular: 0x222222 });
+  const frameMat = new THREE.MeshPhongMaterial({ color: 0x1c2026, shininess: 13 });
+  const accentMat = new THREE.MeshPhongMaterial({ color: 0x3a3f46, shininess: 7 });
+  const metalMat = new THREE.MeshPhongMaterial({ color: 0x555555, shininess: 20 });
+  const benchTopMat = new THREE.MeshPhongMaterial({ color: 0x363b43, shininess: 5 });
+  const recessMat = new THREE.MeshPhongMaterial({ color: 0x0f1216, shininess: 2 });
+  const darkFrameMat = new THREE.MeshPhongMaterial({ color: 0x22262b, shininess: 11 });
+  const monitorBezelMat = new THREE.MeshPhongMaterial({ color: 0x181c22, shininess: 18 });
+  const screenMat = new THREE.MeshPhongMaterial({ color: 0x0a0c10, emissive: 0x040506, shininess: 4 });
+
+  const lowerDepth = BENCH_DEPTH - 0.22;
+  const lowerCenterZ = BENCH_DEPTH * 0.44 - 0.14;
+  const lowerCab = new THREE.Mesh(new THREE.BoxGeometry(W * 0.96, 0.72, lowerDepth), panelMat);
+  lowerCab.position.set(0, 0.36, lowerCenterZ);
+  group.add(lowerCab);
+
+  const kneePanel = new THREE.Mesh(new THREE.BoxGeometry(W * 0.82, 0.38, 0.06), darkFrameMat);
+  kneePanel.position.set(0, 0.30, lowerCenterZ + lowerDepth * 0.5 - 0.008);
+  group.add(kneePanel);
+
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.78, 0.36), frameMat);
+  legL.position.set(-W / 2 + 0.028, 0.39, lowerCenterZ);
+  group.add(legL);
+  const legR = legL.clone(); legR.position.x = W / 2 - 0.028; group.add(legR);
+
+  addPanelRivets(group, -W / 2 + 0.05, 0.39, lowerCenterZ + 0.12, 2, 3, 0.05, 0.22, 0.009);
+  addPanelRivets(group,  W / 2 - 0.05, 0.39, lowerCenterZ + 0.12, 2, 3, 0.05, 0.22, 0.009);
+
+  const slopeRad = 8 * Math.PI / 180;
+  const backDeltaY = BENCH_DEPTH * Math.sin(slopeRad);
+  const slopeCenterY = BENCH_OP_EDGE_Y + backDeltaY * 0.5;
+  const slopeCenterZ = 0.02;
+  const desk = new THREE.Mesh(new THREE.BoxGeometry(W + 0.025, 0.055, BENCH_DEPTH), benchTopMat);
+  desk.rotation.x = slopeRad;
+  desk.position.set(0, slopeCenterY, slopeCenterZ);
+  group.add(desk);
+
+  const lip = new THREE.Mesh(new THREE.BoxGeometry(W + 0.03, 0.028, 0.075), accentMat);
+  lip.position.set(0, BENCH_OP_EDGE_Y + 0.008, slopeCenterZ + BENCH_DEPTH * 0.46);
+  group.add(lip);
+
+  const riserBackZ = -0.52;
+  const riser = new THREE.Mesh(new THREE.BoxGeometry(W * 0.98, RISER_H, 0.22), frameMat);
+  riser.position.set(0, BENCH_OP_EDGE_Y + RISER_H * 0.5, riserBackZ);
+  group.add(riser);
+
+  const recess = new THREE.Mesh(new THREE.BoxGeometry(W * 0.82, RISER_H * 0.78, 0.08), recessMat);
+  recess.position.set(0, BENCH_OP_EDGE_Y + RISER_H * 0.5 + 0.01, riserBackZ + 0.09);
+  group.add(recess);
+
+  const topRail = new THREE.Mesh(new THREE.BoxGeometry(W + 0.04, 0.09, 0.15), darkFrameMat);
+  topRail.position.set(0, BENCH_OP_EDGE_Y + RISER_H - 0.02, riserBackZ + 0.11);
+  group.add(topRail);
+
+  const sideL = new THREE.Mesh(new THREE.BoxGeometry(0.07, RISER_H * 0.92, 0.48), frameMat);
+  sideL.position.set(-W / 2 + 0.02, BENCH_OP_EDGE_Y + RISER_H * 0.46, -0.12);
+  group.add(sideL);
+  const sideR = sideL.clone(); sideR.position.x = W / 2 - 0.02; group.add(sideR);
+
+  // 4 monitors (2x2)
+  const monW = 1.05;
+  const monH = 0.72;
+  const monTilt = 12 * Math.PI / 180;
+  const monBezelThick = 0.035;
+
+  const monitorPositions = [
+    { x: -0.58, y: BENCH_OP_EDGE_Y + 0.82, z: riserBackZ + 0.18, label: 'MONITOR 1' },
+    { x:  0.58, y: BENCH_OP_EDGE_Y + 0.82, z: riserBackZ + 0.18, label: 'MONITOR 2' },
+    { x: -0.58, y: BENCH_OP_EDGE_Y + 1.58, z: riserBackZ + 0.17, label: 'MONITOR 3' },
+    { x:  0.58, y: BENCH_OP_EDGE_Y + 1.58, z: riserBackZ + 0.17, label: 'MONITOR 4' }
+  ];
+
+  monitorPositions.forEach((mp) => {
+    const bezel = new THREE.Mesh(new THREE.BoxGeometry(monW + monBezelThick * 2, monH + monBezelThick * 2, 0.055), monitorBezelMat);
+    bezel.position.set(mp.x, mp.y, mp.z - 0.01);
+    bezel.rotation.x = monTilt;
+    group.add(bezel);
+
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(monW, monH), screenMat);
+    screen.position.set(mp.x, mp.y, mp.z + 0.03);
+    screen.rotation.x = monTilt;
+    group.add(screen);
+
+    const monLabelTex = makePanelLabelTexture(mp.label, 128, 20, '#556677', '#0a0c10');
+    const monLabel = new THREE.Mesh(new THREE.PlaneGeometry(0.78, 0.13), new THREE.MeshBasicMaterial({ map: monLabelTex, transparent: true }));
+    monLabel.position.set(mp.x, mp.y - monH * 0.42, mp.z + 0.05);
+    monLabel.rotation.x = monTilt;
+    group.add(monLabel);
+  });
+
+  const headerTex = makePanelLabelTexture('PLANT PROCESS COMPUTER', 380, 44, '#f5f0e0', '#0c0f13');
+  const header = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 0.30), new THREE.MeshBasicMaterial({ map: headerTex, transparent: true }));
+  header.position.set(0, BENCH_OP_EDGE_Y + RISER_H - 0.18, riserBackZ + 0.13);
+  group.add(header);
+
+  const hmiLabel = makePanelLabelTexture('HMI  •  PPCS', 160, 22, '#c8c0a8', '#0a0c10');
+  const hmiP = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.15), new THREE.MeshBasicMaterial({ map: hmiLabel, transparent: true }));
+  hmiP.position.set(0, BENCH_OP_EDGE_Y + 0.52, riserBackZ + 0.12);
+  group.add(hmiP);
+
+  const cH = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.038, W + 0.25, 7), metalMat);
+  cH.rotation.z = Math.PI / 2;
+  cH.position.set(0, BENCH_OP_EDGE_Y + 1.05, riserBackZ - 0.14);
+  group.add(cH);
+
+  addPanelRivets(group, -W * 0.30, BENCH_OP_EDGE_Y + 0.65, riserBackZ + 0.09, 3, 2, 0.28, 0.20, 0.008);
+  addPanelRivets(group,  W * 0.30, BENCH_OP_EDGE_Y + 0.65, riserBackZ + 0.09, 3, 2, 0.28, 0.20, 0.008);
+
+  scene.add(group);
+  return group;
+}
+
+// ---------------------------------------------------------------------------
+// Basic room + horseshoe layout + minimal FPS (to walk and inspect panels)
+// ---------------------------------------------------------------------------
+function buildPanelRoom() {
+  scene = new THREE.Scene();
+  scene.fog = new THREE.Fog(0x08090b, 8, 26);
+
+  camera = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.1, 60);
+  camera.rotation.order = 'YXZ';
+
+  yawObject = new THREE.Object3D();
+  yawObject.position.set(0, 0, 2.8); // start facing the center of the horseshoe
+  yawObject.add(camera);
+  camera.position.set(0, 1.68, 0);
+  scene.add(yawObject);
+
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+
+  clock = new THREE.Clock();
+
+  // Lighting - industrial fluorescent + task
+  scene.add(new THREE.HemisphereLight(0x8a9aa8, 0x332f22, 0.55));
+  const key = new THREE.DirectionalLight(0xfff0d0, 0.65);
+  key.position.set(4, 11, -7);
+  scene.add(key);
+
+  // Overhead lights
+  [-4, 0, 4].forEach(x => {
+    const pl = new THREE.PointLight(0xffd38a, 0.9, 12);
+    pl.position.set(x, 3.6, -5);
+    scene.add(pl);
+  });
+
+  // Floor (raised industrial)
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(25, 20),
+    new THREE.MeshPhongMaterial({ color: 0x2a2f36, shininess: 5 })
+  );
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = 0.001;
+  scene.add(floor);
+
+  const grid = new THREE.GridHelper(25, 25, 0x3a414a, 0x262a30);
+  grid.position.y = 0.002;
+  grid.material.opacity = 0.5;
+  grid.material.transparent = true;
+  scene.add(grid);
+
+  // Back wall (behind horseshoe)
+  const wallMat = new THREE.MeshPhongMaterial({ color: 0x1c2026, shininess: 3 });
+  const backWall = new THREE.Mesh(new THREE.BoxGeometry(24, 4.2, 0.6), wallMat);
+  backWall.position.set(0, 2.1, -9.2);
+  scene.add(backWall);
+
+  // Side walls - larger to fit the full horseshoe without clipping the outer panels
+  const sideL = new THREE.Mesh(new THREE.BoxGeometry(0.6, 4.2, 16), wallMat);
+  sideL.position.set(-12.0, 2.1, -2);
+  scene.add(sideL);
+  const sideR = sideL.clone();
+  sideR.position.x = 12.0;
+  scene.add(sideR);
+
+  // Simple ceiling with light strips
+  const ceil = new THREE.Mesh(new THREE.PlaneGeometry(24, 20), new THREE.MeshPhongMaterial({ color: 0x15181e }));
+  ceil.rotation.x = Math.PI / 2;
+  ceil.position.y = 4.1;
+  scene.add(ceil);
+
+  // Fluorescent light strips
+  for (let i = -3; i <= 3; i++) {
+    const strip = new THREE.Mesh(
+      new THREE.BoxGeometry(22, 0.12, 0.6),
+      new THREE.MeshPhongMaterial({ color: 0xffffee, emissive: 0x444422 })
+    );
+    strip.position.set(0, 4.0, -5 + i * 2.2);
+    scene.add(strip);
+  }
+
+  // === HORSESHOE ARRANGEMENT OF THE 7 PANEL BODIES ===
+  // Excellent spacing to prevent any bleeding or collision. Panels positioned with realistic gaps (~0.6m+ effective between sections) and angles for a smooth U-shape.
+  // Turbine tucked properly on the far right without protruding or clipping (not the bad spot in previous images).
+  // Left: RCS inner, ESF outer.
+  // Center: Reactor Control, HMI in front.
+  // Right: SG inner, Electrical, Turbine outer.
+  // Adjusted x and z for the curve to keep all panels separate but connected visually, matching the reference style.
+  const backZ = -8.0;
+
+  // Center: Reactor Control
+  createReactorControlPanelBody(scene, 0, backZ, 0);
+
+  // Left wing
+  createRCSPanelBody(scene, -4.8, -6.5, 0.4);     // RCS
+  createESFPanelBody(scene, -7.8, -4.0, 0.85);     // ESF
+
+  // Right wing
+  createSGFeedPanelBody(scene, 4.8, -6.5, -0.4);  // SG/Feedwater
+  createElectricalPanelBody(scene, 8.0, -4.0, -0.85); // Electrical
+
+  // Turbine Generator - proper position on the right, not crap/protruding
+  createTurbinePanelBody(scene, 10.0, -2.5, -1.0);
+
+  // HMI central forward console
+  createHMIPanelBody(scene, 0, -2.5, 0);
+
+  // Fix z-fighting / flickering on panel labels (e.g. ELECTRICAL DISTRIBUTION box) as you walk around.
+  // The label Planes are placed with tiny z offset to the main vertical face -> depth buffer fights at shallow view angles during movement.
+  // Push all label/monitor planes a bit forward (positive local z for these orientations). Cheap fix, no change to panel bodies.
+  scene.traverse((obj) => {
+    if (obj.isMesh && obj.geometry.type === 'PlaneGeometry' && obj.material.map) {
+      obj.position.z += 0.12;
+    }
+  });
+
+  // Extra compute-heavy realism details: additional task lighting and overhead structures for dense industrial feel (more lights = better lighting calc, more meshes)
+  const extraLights = [
+    [-2.5, 3.2, -4.8], [2.5, 3.2, -4.8],
+    [-5.5, 3.2, -3.5], [5.5, 3.2, -3.5],
+    [0, 3.8, -1.8]
+  ];
+  extraLights.forEach(([x, y, z]) => {
+    const pl = new THREE.PointLight(0xffe9c0, 0.7, 8);
+    pl.position.set(x, y, z);
+    scene.add(pl);
+  });
+
+  // Overhead cable trays for more realism (compute heavy with extra geometry)
+  for (let i = -2; i <= 2; i++) {
+    const tray = new THREE.Mesh(
+      new THREE.BoxGeometry(14, 0.08, 0.25),
+      new THREE.MeshPhongMaterial({ color: 0x3c424a, shininess: 10 })
+    );
+    tray.position.set(0, 3.7, -5 + i * 1.8);
+    scene.add(tray);
+  }
+
+  // Basic minimal FPS controls (WASD + mouse look, no interactions)
+  // H for help popup, Shift for run (more realistic movement)
+  document.addEventListener('keydown', (e) => {
+    if (!document.pointerLockElement) return;
+    if (e.code === 'KeyW') moveState.forward = true;
+    if (e.code === 'KeyS') moveState.backward = true;
+    if (e.code === 'KeyA') moveState.left = true;
+    if (e.code === 'KeyD') moveState.right = true;
+    if (e.code === 'KeyH') toggleHelp();
+    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') isRunning = true;
+    if (e.code === 'Space' && onGround) {
+      verticalVelocity = 8.5;
+      onGround = false;
+      playJumpSound();
+    }
+  });
+  document.addEventListener('keyup', (e) => {
+    if (!document.pointerLockElement) return;
+    if (e.code === 'KeyW') moveState.forward = false;
+    if (e.code === 'KeyS') moveState.backward = false;
+    if (e.code === 'KeyA') moveState.left = false;
+    if (e.code === 'KeyD') moveState.right = false;
+    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') isRunning = false;
+  });
+
+  canvas.addEventListener('click', () => {
+    if (!document.pointerLockElement) {
+      canvas.requestPointerLock();
+      initAudio();  // user gesture for Web Audio (required by browsers)
+    }
+  });
+
+  document.addEventListener('pointerlockchange', () => {
+    if (!document.pointerLockElement) {
+      moveState.forward = moveState.backward = moveState.left = moveState.right = false;
+      isRunning = false;
+      verticalVelocity = 0;
+      onGround = true;
+      lastStepTime = 0;
+    }
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (document.pointerLockElement) {
+      yawObject.rotation.y -= e.movementX * 0.0018;
+      camera.rotation.x = Math.max(-1.3, Math.min(1.3, camera.rotation.x - e.movementY * 0.0018));
+    }
+  });
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // Initial render + loop
+  renderer.render(scene, camera);
+  animate();
+}
+
+function updateMovement(dt) {
+  if (!document.pointerLockElement) {
+    moveState.forward = moveState.backward = moveState.left = moveState.right = false;
+    isRunning = false;
+    verticalVelocity = 0;
+    onGround = true;
+    lastStepTime = 0;
+    return;
+  }
+
+  velocity.x -= velocity.x * 9.0 * dt;
+  velocity.z -= velocity.z * 9.0 * dt;
+  const baseSpeed = 1.9;
+  const speed = isRunning ? baseSpeed * 2.4 : baseSpeed;  // Shift to run - more realistic operator movement when needed
+  if (moveState.forward) velocity.z -= speed * dt;
+  if (moveState.backward) velocity.z += speed * dt;
+  if (moveState.left) velocity.x -= speed * dt;
+  if (moveState.right) velocity.x += speed * dt;
+
+  yawObject.translateX(velocity.x * dt);
+  yawObject.translateZ(velocity.z * dt);
+
+  // When no movement keys are held, aggressively damp residual velocity (from the friction model)
+  // so that bob and other velocity-based things stop quickly and cleanly.
+  if (!moveState.forward && !moveState.backward && !moveState.left && !moveState.right) {
+    velocity.x *= 0.55;
+    velocity.z *= 0.55;
+    if (Math.abs(velocity.x) < 0.01) velocity.x = 0;
+    if (Math.abs(velocity.z) < 0.01) velocity.z = 0;
+  }
+
+  // Jumping physics + gravity (simple but realistic for control room floor; onGround for sounds/bob)
+  verticalVelocity += -28 * dt;  // gravity
+  yawObject.position.y += verticalVelocity * dt;
+  if (yawObject.position.y <= 0) {
+    if (verticalVelocity < -2.5) playLandSound();
+    yawObject.position.y = 0;
+    verticalVelocity = 0;
+    onGround = true;
+  } else {
+    onGround = false;
+  }
+
+  // Soft bounds inside the room (larger to fit the full horseshoe)
+  yawObject.position.x = Math.max(-11.5, Math.min(11.5, yawObject.position.x));
+  yawObject.position.z = Math.max(-8.5, Math.min(5.5, yawObject.position.z));
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.1);
+
+  updateMovement(dt);
+
+  // Head bob only on ground when moving (realistic; no floaty bob in air)
+  const moving = Math.abs(velocity.z) + Math.abs(velocity.x) > 0.005;
+  if (moving && onGround) {
+    camera.position.y = 1.68 + Math.sin(Date.now() / 220) * 0.01;
+  } else if (onGround) {
+    camera.position.y = 1.68;
+  }
+  // in air the parent yaw y carries the jump height, local stays ~1.68
+
+  // Footstep sounds using simple lastStepTime + Date.now() interval.
+  // Play immediately on first (lastStepTime===0), then every 350ms run / 600ms walk while onGround && isInputMoving.
+  const isInputMoving = document.pointerLockElement && (moveState.forward || moveState.backward || moveState.left || moveState.right);
+  if (onGround && isInputMoving && (Math.abs(velocity.x) + Math.abs(velocity.z) > 0.05)) {
+    const now = Date.now();
+    const interval = isRunning ? 350 : 600;
+    if (lastStepTime === 0 || now - lastStepTime > interval) {
+      lastStepTime = now;
+      playFootstep(isRunning);
+    }
+  } else {
+    lastStepTime = 0;
+  }
+
+  renderer.render(scene, camera);
+}
+
+function init() {
+  buildPanelRoom();
+  console.log('%c[PWR MCR Panel Bodies] Realistic horseshoe with 7 panel bodies only. Walk around to inspect the structural design.', 'color:#0a0');
+}
+
+window.addEventListener('load', init);
+</script>
+</body>
+</html>
